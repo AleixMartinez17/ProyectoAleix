@@ -17,11 +17,10 @@ const fs = require('fs');
 const semver = require('semver');
 
 const FAILED_LOGIN_ATTEMPTS_LIMIT = 5;
-const LOGIN_BLOCK_TIME = 15 * 60 * 1000; // 15 minutos en milisegundos
+const LOGIN_BLOCK_TIME = 15 * 60 * 1000;
 
 const app = express();
 
-// ================= CONFIGURACIÓN INICIAL ================= //
 const allowedOrigins = [
   'http://localhost',
   'http://127.0.0.1', 
@@ -60,27 +59,6 @@ app.use((req, res, next) => {
 
 app.use(express.json());
 
-/* ================= RATE LIMITING ================= 
-const loginLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 10,
-  handler: (req, res) => {
-    res.status(429).json({
-      success: false,
-      message: 'Demasiados intentos desde esta IP. Inténtalo más tarde.',
-      code: 'RATE_LIMIT_EXCEEDED',
-      retryAfter: 15 * 60 // segundos
-    });
-  },
-  skipSuccessfulRequests: true,
-  keyGenerator: (req) => req.ip,
-  standardHeaders: true,
-  legacyHeaders: false
-});
-
-/*/
-
-// ================= BASE DE DATOS ================= //
 const pool = mysql.createPool({
   host: process.env.DB_HOST || "localhost",
   user: process.env.DB_USER || "root",
@@ -213,20 +191,17 @@ async function handleFailedLogin(email) {
 
 app.post("/register", 
   [
-    // Validación del nombre
     body('name')
       .trim()
       .notEmpty().withMessage('El nombre es obligatorio')
       .isLength({ min: 2 }).withMessage('El nombre debe tener al menos 2 caracteres')
       .matches(/^[A-Za-záéíóúüñÁÉÍÓÚÜÑ\s]+$/).withMessage('El nombre solo puede contener letras y espacios'),
     
-    // Validación del email
     body('email')
       .notEmpty().withMessage('El email es obligatorio')
       .isEmail().withMessage('Debe ser un email válido (ej: usuario@dominio.com)')
       .normalizeEmail(),
     
-    // Validación de la contraseña
     body('password')
       .notEmpty().withMessage('La contraseña es obligatoria')
       .isLength({ min: 8 }).withMessage('La contraseña debe tener al menos 8 caracteres')
@@ -251,10 +226,8 @@ app.post("/register",
       const { name, email, password } = req.body;
       conn = await pool.getConnection();
       
-      // Iniciar transacción
       await conn.beginTransaction();
 
-      // 1. Verificar si el email existe (con LOCK para evitar condiciones de carrera)
       const [existing] = await conn.query(
         "SELECT id FROM users WHERE email = ? FOR UPDATE",
         [email]
@@ -269,7 +242,6 @@ app.post("/register",
         });
       }
 
-      // 2. Hash de la contraseña y generación de MFA
       const hashedPassword = await bcrypt.hash(password, 10);
       const secret = speakeasy.generateSecret({ 
         length: 20,
@@ -281,19 +253,15 @@ app.post("/register",
         Math.floor(100000 + Math.random() * 900000).toString()
       );
 
-      // 3. Inserción en la base de datos
       const [result] = await conn.query(
         "INSERT INTO users (name, email, password, mfa_secret, backup_codes) VALUES (?, ?, ?, ?, ?)",
         [name, email, hashedPassword, secret.base32, JSON.stringify(backupCodes)]
       );
 
-      // 4. Generación del QR Code
       const qrCodeDataURL = await qrcode.toDataURL(secret.otpauth_url);
 
-      // Confirmar transacción
       await conn.commit();
 
-      // Respuesta exitosa
       res.status(201).json({
         success: true,
         qrCodeDataURL,
@@ -306,7 +274,6 @@ app.post("/register",
       });
 
     } catch (error) {
-      // Rollback en caso de error
       if (conn) await conn.rollback();
       
       console.error("Error en registro:", {
@@ -388,7 +355,6 @@ app.post("/login-precheck", async (req, res) => {
 });
 
 app.post("/login", 
-  // Middleware para verificar Content-Type
   (req, res, next) => {
     if (!req.is('application/json')) {
       return res.status(415).json({
@@ -400,7 +366,6 @@ app.post("/login",
     next();
   },
 
-  // Middleware para validar campos requeridos
   (req, res, next) => {
     const { email, password, token } = req.body;
     const missingFields = [];
@@ -424,13 +389,8 @@ app.post("/login",
     next();
   },
 
-  // Rate limiting
-  //loginLimiter,
-
-  // Control de intentos fallidos
   checkLoginAttempts,
 
-  // Handler principal
   async (req, res) => {
     const { email, password, token: mfaToken } = req.body;
     let conn;
@@ -438,7 +398,6 @@ app.post("/login",
     try {
       conn = await pool.getConnection();
       
-      // 1. Buscar usuario
       const [users] = await conn.query(
         `SELECT id, email, password, name, mfa_secret, backup_codes, login_attempts 
          FROM users WHERE email = ? FOR UPDATE`,
@@ -456,7 +415,6 @@ app.post("/login",
 
       const user = users[0];
       
-      // 2. Verificar contraseña
       const passwordMatch = await bcrypt.compare(password, user.password);
       if (!passwordMatch) {
         console.warn(`❌ Contraseña incorrecta para: ${email}`);
@@ -468,7 +426,6 @@ app.post("/login",
         });
       }
 
-      // 3. Verificar MFA
       const backupCodes = JSON.parse(user.backup_codes || "[]");
       const tokenValid = speakeasy.totp.verify({
         secret: user.mfa_secret,
@@ -489,13 +446,11 @@ app.post("/login",
         });
       }
 
-      // 4. Login exitoso - resetear intentos
       await conn.query(
         "UPDATE users SET login_attempts = 0, last_failed_login = NULL WHERE id = ?",
         [user.id]
       );
 
-      // 5. Generar token JWT
       const token = jwt.sign(
         { 
           userId: user.id, 
@@ -506,7 +461,6 @@ app.post("/login",
         { expiresIn: '1h' }
       );
 
-      // 6. Si usó código de respaldo, actualizar la lista
       if (isBackupCode) {
         const newBackupCodes = backupCodes.filter(code => code !== mfaToken);
         await conn.query(
@@ -543,7 +497,7 @@ app.post("/login",
         message: process.env.NODE_ENV === 'development' 
           ? `Error: ${error.message}`
           : "Error interno del servidor",
-        referenceId: Date.now() // ID para rastrear el error en logs
+        referenceId: Date.now()
       });
     } finally {
       if (conn) conn.release();
@@ -631,12 +585,10 @@ app.get('/api/security/scan-dependencies', auditAuth, async (req, res) => {
     req.startTime = Date.now();
     
     try {
-        // Leer package.json y package-lock.json
         const packageJson = JSON.parse(fs.readFileSync(path.join(projectPath, 'package.json')));
         const packageLockJson = fs.existsSync(path.join(projectPath, 'package-lock.json')) ? 
             JSON.parse(fs.readFileSync(path.join(projectPath, 'package-lock.json'))) : null;
 
-        // Función mejorada para ejecutar comandos
         const executeCmd = async (cmd, critical = false) => {
             return new Promise((resolve) => {
                 exec(cmd, {
@@ -659,7 +611,6 @@ app.get('/api/security/scan-dependencies', auditAuth, async (req, res) => {
             });
         };
 
-        // Ejecutar comandos en paralelo
         const [npmInstallResult, auditResult, listResult, outdatedResult, checkUpdatesResult] = await Promise.allSettled([
             executeCmd('npm install --package-lock-only --no-audit', true),
             executeCmd('npm audit --json --audit-level=critical'),
@@ -668,16 +619,13 @@ app.get('/api/security/scan-dependencies', auditAuth, async (req, res) => {
             executeCmd('npx npm-check-updates --json')
         ]);
 
-        // Función mejorada para parsear la salida
         const parseOutput = (output) => {
             try {
                 if (!output || typeof output !== 'string') return null;
                 
-                // Intenta parsear directamente
                 try {
                     return JSON.parse(output);
                 } catch (e) {
-                    // Si falla, busca el JSON dentro del output
                     const jsonStart = output.indexOf('{');
                     const jsonEnd = output.lastIndexOf('}') + 1;
                     if (jsonStart === -1 || jsonEnd === 0) return null;
@@ -690,7 +638,6 @@ app.get('/api/security/scan-dependencies', auditAuth, async (req, res) => {
             }
         };
 
-        // Procesar resultados con mejor manejo de errores
         const auditData = auditResult.status === 'fulfilled' ? parseOutput(auditResult.value.output) || {} : {};
         const listData = listResult.status === 'fulfilled' ? parseOutput(listResult.value.output) || {} : {};
         const outdatedData = outdatedResult.status === 'fulfilled' ? parseOutput(outdatedResult.value.output) || {} : {};
@@ -698,7 +645,6 @@ app.get('/api/security/scan-dependencies', auditAuth, async (req, res) => {
         const directDependencies = Object.keys(packageJson.dependencies || {});
         const devDependencies = Object.keys(packageJson.devDependencies || {});
 
-        // Función mejorada para obtener vulnerabilidades
         const getPackageVulnerabilities = (pkgName) => {
             if (!auditData.vulnerabilities || typeof auditData.vulnerabilities !== 'object') {
                 return [];
@@ -706,7 +652,6 @@ app.get('/api/security/scan-dependencies', auditAuth, async (req, res) => {
             
             const vulnerabilities = [];
             
-            // Buscar vulnerabilidades directas
             if (auditData.vulnerabilities[pkgName]) {
                 const vuln = auditData.vulnerabilities[pkgName];
                 vulnerabilities.push({
@@ -723,7 +668,6 @@ app.get('/api/security/scan-dependencies', auditAuth, async (req, res) => {
                 });
             }
             
-            // Buscar en metadatos si existe
             if (auditData.metadata?.vulnerabilities) {
                 Object.entries(auditData.metadata.vulnerabilities).forEach(([severity, count]) => {
                     if (count > 0) {
@@ -741,7 +685,6 @@ app.get('/api/security/scan-dependencies', auditAuth, async (req, res) => {
             return vulnerabilities.length > 0 ? vulnerabilities : [];
         };
 
-        // Función mejorada para analizar el árbol de dependencias
         const analyzeDependencyTree = (deps, directDependencies, level = 0, parent = null) => {
             if (!deps || typeof deps !== 'object') {
                 if (level > 0) { // Solo mostrar advertencia para niveles profundos
@@ -818,13 +761,11 @@ app.get('/api/security/scan-dependencies', auditAuth, async (req, res) => {
             directDependencies
         );
 
-        // Función mejorada para generar resumen de vulnerabilidades
         const getVulnerabilitiesSummary = () => {
             const vulnerabilities = [];
             
             if (auditData.vulnerabilities) {
                 Object.entries(auditData.vulnerabilities).forEach(([pkgName, vuln]) => {
-                    // Mejorar la obtención de información de vulnerabilidades
                     const viaInfo = Array.isArray(vuln.via) ? 
                         vuln.via.find(item => typeof item === 'object') : null;
                     
@@ -855,7 +796,6 @@ app.get('/api/security/scan-dependencies', auditAuth, async (req, res) => {
                 });
             }
             
-            // Agregar resumen de metadatos si no hay vulnerabilidades específicas
             if (vulnerabilities.length === 0 && auditData.metadata?.vulnerabilities) {
                 Object.entries(auditData.metadata.vulnerabilities).forEach(([severity, count]) => {
                     if (count > 0) {
@@ -876,11 +816,9 @@ app.get('/api/security/scan-dependencies', auditAuth, async (req, res) => {
             return vulnerabilities;
         };
 
-        // Función mejorada para generar recomendaciones
         const generateRecommendations = () => {
             const recommendations = [];
             
-            // Resumen de vulnerabilidades
             const vulnSummary = auditData.metadata?.vulnerabilities || {};
             if (vulnSummary.critical > 0) {
                 recommendations.push({
@@ -900,7 +838,6 @@ app.get('/api/security/scan-dependencies', auditAuth, async (req, res) => {
                 });
             }
             
-            // Dependencias desactualizadas
             const outdatedCount = Object.keys(outdatedData).length;
             if (outdatedCount > 0) {
                 recommendations.push({
@@ -914,11 +851,9 @@ app.get('/api/security/scan-dependencies', auditAuth, async (req, res) => {
                 });
             }
             
-            // Recomendaciones específicas para vulnerabilidades conocidas
             if (auditData.vulnerabilities) {
                 Object.entries(auditData.vulnerabilities).forEach(([pkgName, vuln]) => {
                     if (vuln.severity === 'critical' || vuln.severity === 'high') {
-                        // Mejorar la obtención de información de vulnerabilidades
                         const viaInfo = Array.isArray(vuln.via) ? 
                             vuln.via.find(item => typeof item === 'object') : null;
                         
@@ -969,7 +904,6 @@ app.get('/api/security/scan-dependencies', auditAuth, async (req, res) => {
             });
         };
 
-        // Funciones auxiliares
         const countTotalDependencies = (deps, count = 0) => {
             if (!deps) return count;
             for (const key in deps) {
@@ -1003,7 +937,6 @@ app.get('/api/security/scan-dependencies', auditAuth, async (req, res) => {
             return 'ACTUALIZADO ✅';
         };
 
-        // Generar informe completo
         const fullReport = {
             success: true,
             metadata: {
@@ -1023,7 +956,7 @@ app.get('/api/security/scan-dependencies', auditAuth, async (req, res) => {
                 securityRiskLevel: calculateRiskLevel(),
                 outdatedRiskLevel: calculateOutdatedRiskLevel()
             },
-            // Nueva sección de dependencias directas detalladas
+          
             directDependencies: directDependencies.map(name => {
                 const depData = analyzedDependencies.find(d => d.name === name) || {};
                 const outdatedInfo = outdatedData[name] || {};
@@ -1060,7 +993,6 @@ app.get('/api/security/scan-dependencies', auditAuth, async (req, res) => {
             } : undefined
         };
 
-        // Función mejorada para formatear reporte para terminal
         const formatTerminalReport = (report) => {
             const colors = {
                 reset: '\x1b[0m',
@@ -1096,18 +1028,15 @@ app.get('/api/security/scan-dependencies', auditAuth, async (req, res) => {
 
             let output = '';
 
-            // Encabezado
             output += `${colors.bold}${colors.cyan}${icons.package} INFORME DE SEGURIDAD DE DEPENDENCIAS ${icons.package}${colors.reset}\n`;
             output += `${colors.cyan}${'═'.repeat(60)}${colors.reset}\n\n`;
             
-            // Metadatos
             output += `${colors.bold}${colors.blue}${icons.clipboard} METADATOS DEL PROYECTO${colors.reset}\n`;
             output += `  ${colors.bold}Nombre:${colors.reset} ${report.metadata.project}\n`;
             output += `  ${colors.bold}Versión:${colors.reset} ${report.metadata.version}\n`;
             output += `  ${colors.bold}Node.js:${colors.reset} ${report.metadata.nodeVersion}\n`;
             output += `  ${colors.bold}Tiempo análisis:${colors.reset} ${report.metadata.scanDuration}\n\n`;
             
-            // Resumen
             output += `${colors.bold}${colors.blue}${icons.chart} RESUMEN DE DEPENDENCIAS${colors.reset}\n`;
             output += `  ${colors.bold}Total dependencias:${colors.reset} ${report.summary.totalDependencies}\n`;
             output += `  ${colors.bold}Dependencias directas:${colors.reset} ${report.summary.directDependencies}\n`;
@@ -1116,7 +1045,6 @@ app.get('/api/security/scan-dependencies', auditAuth, async (req, res) => {
             output += `  ${colors.bold}Paquetes vulnerables:${colors.reset} ${report.summary.vulnerablePackages}\n`;
             output += `  ${colors.bold}Vulnerabilidades totales:${colors.reset} ${report.summary.totalVulnerabilities}\n`;
             
-            // Nivel de riesgo con colores
             let riskColor = colors.green;
             if (report.summary.securityRiskLevel.includes('ALTO')) riskColor = colors.yellow;
             if (report.summary.securityRiskLevel.includes('CRÍTICO')) riskColor = colors.red;
@@ -1127,7 +1055,6 @@ app.get('/api/security/scan-dependencies', auditAuth, async (req, res) => {
             if (report.summary.outdatedRiskLevel.includes('ALTO')) outdatedRiskColor = colors.red;
             output += `  ${colors.bold}Nivel de riesgo desactualización:${colors.reset} ${outdatedRiskColor}${report.summary.outdatedRiskLevel}${colors.reset}\n\n`;
             
-            // Nueva sección: Dependencias directas
             output += `${colors.bold}${colors.blue}${icons.direct} DEPENDENCIAS DIRECTAS (${report.directDependencies.length}) ${icons.direct}${colors.reset}\n`;
             report.directDependencies.forEach(dep => {
                 let depColor = colors.reset;
@@ -1165,7 +1092,6 @@ app.get('/api/security/scan-dependencies', auditAuth, async (req, res) => {
                 output += `\n`;
             });
             
-            // Vulnerabilidades críticas/altas
             const criticalVulns = report.vulnerabilities.filter(v => v.severity === 'critical');
             const highVulns = report.vulnerabilities.filter(v => v.severity === 'high');
             
@@ -1189,7 +1115,6 @@ app.get('/api/security/scan-dependencies', auditAuth, async (req, res) => {
                 });
             }
             
-            // Recomendaciones
             output += `${colors.bold}${colors.cyan}${icons.bulb} RECOMENDACIONES ${icons.bulb}${colors.reset}\n`;
             report.recommendations.forEach((rec, i) => {
                 let priorityColor = colors.green;
@@ -1214,7 +1139,6 @@ app.get('/api/security/scan-dependencies', auditAuth, async (req, res) => {
             return output;
         };
 
-        // Formatear respuesta según el cliente
         if (req.headers['user-agent']?.includes('curl')) {
             res.set('Content-Type', 'text/plain');
             return res.send(formatTerminalReport(fullReport));
@@ -1233,7 +1157,6 @@ app.get('/api/security/scan-dependencies', auditAuth, async (req, res) => {
     }
 });
 
-// ================= MANEJO DE ERRORES ================= //
 app.use((err, req, res, next) => {
   if (err.message === 'Acceso bloqueado por política CORS') {
     return res.status(403).json({
@@ -1249,14 +1172,13 @@ app.use((err, req, res, next) => {
   });
 });
 
-// ==================== INICIAR SERVIDOR ==================== //
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`\n🚀 Servidor activo en http://localhost:${PORT}`);
-  console.log("🔒 Endpoint de escaneo protegido en /api/security/scan-dependencies");
+  console.log("🔒 Endpoint de escaneo protegido en /api/security/scan-dependencies, abrir en CMD con cURL en carpeta del servidor");
   console.log("🔑 Usa estas credenciales para acceder:");
   console.log(`   Usuario: ${process.env.AUDIT_USER || 'admin'}`);
-  console.log(`   Contraseña: ${process.env.AUDIT_PASSWORD ? '••••••' : 'AdminSeguro123!'}`);
+  console.log(`   Contraseña: ${process.env.AUDIT_PASSWORD ? 'Contraseña2004!' : 'AdminSeguro123!'}`);
   console.log("\n🔧 Orígenes permitidos:");
   allowedOrigins.forEach(origin => console.log(`   → ${origin}`));
 });
