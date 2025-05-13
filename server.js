@@ -60,7 +60,6 @@ app.use((req, res, next) => {
 
 app.use(express.json());
 
-<<<<<<< HEAD
 /* ================= RATE LIMITING ================= 
 const loginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
@@ -77,17 +76,6 @@ const loginLimiter = rateLimit({
   keyGenerator: (req) => req.ip,
   standardHeaders: true,
   legacyHeaders: false
-=======
-// Configuración de la base de datos
-const pool = mysql.createPool({
-    host: process.env.DB_HOST || "localhost",
-    user: process.env.DB_USER || "root",
-    password: process.env.DB_PASSWORD || "",
-    database: process.env.DB_NAME || "pfg_aleix",
-    waitForConnections: true,
-    connectionLimit: 10,
-    queueLimit: 0
->>>>>>> abe6bc4dc95d4d6a13489bd2c5d9ed51f6be62f4
 });
 
 /*/
@@ -1258,10 +1246,11 @@ app.use((err, req, res, next) => {
   res.status(500).json({ 
     success: false, 
     message: "Error interno del servidor" 
+  });
 });
 
+// ==================== INICIAR SERVIDOR ==================== //
 const PORT = process.env.PORT || 3000;
-<<<<<<< HEAD
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`\n🚀 Servidor activo en http://localhost:${PORT}`);
   console.log("🔒 Endpoint de escaneo protegido en /api/security/scan-dependencies");
@@ -1271,10 +1260,3 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log("\n🔧 Orígenes permitidos:");
   allowedOrigins.forEach(origin => console.log(`   → ${origin}`));
 });
-=======
-app.listen(PORT, () => {
-    console.log(`\n🚀 Servidor activo en http://localhost:${PORT}`);
-    console.log("🔧 Configuración CORS habilitada para:");
-    allowedOrigins.forEach(origin => console.log(`   → ${origin}`));
-});
->>>>>>> abe6bc4dc95d4d6a13489bd2c5d9ed51f6be62f4
